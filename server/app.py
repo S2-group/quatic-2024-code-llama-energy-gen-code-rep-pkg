@@ -1,0 +1,67 @@
+# Script that starts and stops the Monsoon Power Monitor
+from flask import Flask
+from threading import Thread
+import usb
+import Monsoon.HVPM as HVPM
+import Monsoon.sampleEngine as sampleEngine
+import Monsoon.Operations as op
+
+V_OUT = 5.0
+CAL_TIME = 1250
+GRANULARITY = 1
+
+# Monsoon code doesn't work unless it is at the top level.
+Mon = HVPM.Monsoon()
+Mon.setup_usb()
+Mon.setVout(V_OUT)
+engine = sampleEngine.SampleEngine(
+    Monsoon=Mon, 
+    errorMode=sampleEngine.ErrorHandlingModes.off)
+engine.ConsoleOutput(True)
+
+app = Flask(__name__)
+measurement_thread = None
+
+def start_measuring(filename):
+    global engine
+    print(f'Starting sampling for {filename}')
+    engine.enableCSVOutput(f"{filename}.csv")
+    samples = sampleEngine.triggers.SAMPLECOUNT_INFINITE # no limit to samples
+    try:
+        engine.startSampling(
+            calTime=CAL_TIME, 
+            granularity=GRANULARITY,
+            samples=samples)
+    except usb.core.USBTimeoutError as e:
+        pass
+
+
+@app.post('/start/<filename>')
+def start(filename):
+    if filename == '':
+        return 'Filename not provided', 400
+
+    global engine
+    global measurement_thread
+    if measurement_thread is None or not measurement_thread.is_alive(): 
+        measurement_thread = Thread(target=start_measuring, kwargs={'filename': filename})
+        measurement_thread.start()
+        return 'OK'
+
+@app.post('/stop')
+def stop():
+    global engine
+    global measurement_thread
+    if measurement_thread is not None and measurement_thread.is_alive():
+        print('Stopping sampling')
+        Mon.stopSampling()
+        engine.disableCSVOutput() # Closes and writes the CSV file
+        measurement_thread.join()
+        measurement_thread = None
+        return 'OK'
+    else:
+        return 'No measurement running', 400
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
